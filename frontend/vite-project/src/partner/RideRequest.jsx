@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-vars */
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useSelector } from 'react-redux';
 import socket, { connectSocketWithToken } from '../utils/socket';
@@ -85,7 +86,7 @@ const RideRequests = () => {
                 { enableHighAccuracy: true }
             );
         }
-    }, [kycApproved]);
+    }, [driverCoords, kycApproved]);
 
     // Connect socket
     useEffect(() => {
