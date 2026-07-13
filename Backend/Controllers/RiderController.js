@@ -6,9 +6,7 @@ import { ApiError } from "../Utils/ApiError.js";
 import { ApiResponse } from "../Utils/ApiResponse.js";
 import mongoose from "mongoose";
 
-// ═══════════════════════════════════════════════════════════════
 // 1. REQUEST A RIDE (Passenger Side) - OTP REMOVED
-// ═══════════════════════════════════════════════════════════════
 export const requestRide = asyncHandler(async (req, res) => {
     const { pickup, dropoff, fare, distance, duration, vehicleType } = req.body;
 
@@ -16,7 +14,6 @@ export const requestRide = asyncHandler(async (req, res) => {
         throw new ApiError(400, "Pickup, dropoff, and fare are required.");
     }
 
-    // OTP REMOVED - No longer generated
     const ride = await Ride.create({
         passenger: req.user._id,
         pickupLocation: pickup,
@@ -26,18 +23,15 @@ export const requestRide = asyncHandler(async (req, res) => {
         duration: duration || "Calculating...",
         vehicleType: vehicleType || "car",
         status: "PENDING"
-        // otp: REMOVED
     });
 
     const io = req.app.get("io");
     if (io) {
-        // Broadcast to ALL Drivers
         io.emit("ride:new_request", {
             message: "New ride available near you!",
             ride: ride
         });
 
-        // Confirm to passenger - NO OTP
         io.to(req.user._id.toString()).emit("ride:request_confirmed", {
             message: "Your ride request has been submitted.",
             rideId: ride._id,
@@ -50,9 +44,7 @@ export const requestRide = asyncHandler(async (req, res) => {
     );
 });
 
-// ═══════════════════════════════════════════════════════════════
 // 2. ACCEPT RIDE (Partner Side) - OTP REMOVED
-// ═══════════════════════════════════════════════════════════════
 export const acceptRide = asyncHandler(async (req, res) => {
     const { rideId } = req.params;
 
@@ -70,12 +62,10 @@ export const acceptRide = asyncHandler(async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
-        // Notify passenger - NO OTP included
         io.to(ride.passenger.toString()).emit("ride:accepted", {
             message: "A driver has accepted your ride!",
             rideId: ride._id,
             partner: req.user,
-            // otp REMOVED - no longer sent
             driverName: req.user.name,
             driverPhone: req.user.phone,
             driverLocation: req.user.currentLocation,
@@ -88,16 +78,13 @@ export const acceptRide = asyncHandler(async (req, res) => {
     );
 });
 
-// ═══════════════════════════════════════════════════════════════
 // 3. CANCEL RIDE (User/Passenger Side)
-// ═══════════════════════════════════════════════════════════════
 export const cancelRide = asyncHandler(async (req, res) => {
     const { rideId } = req.params;
     const ride = await Ride.findById(rideId);
 
     if (!ride) throw new ApiError(404, "Ride not found.");
 
-    // Only allow cancel if ride is PENDING, ACCEPTED, or ARRIVED
     if (!["PENDING", "ACCEPTED", "ARRIVED"].includes(ride.status)) {
         throw new ApiError(400, "Ride cannot be cancelled at this stage.");
     }
@@ -109,7 +96,6 @@ export const cancelRide = asyncHandler(async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
-        // Notify driver if assigned
         if (ride.partner) {
             io.to(`driver:${ride.partner.toString()}`).emit("ride:cancelled_by_user", {
                 rideId: ride._id,
@@ -117,7 +103,6 @@ export const cancelRide = asyncHandler(async (req, res) => {
                 cancelledBy: "user"
             });
 
-            // Free up the driver
             await User.findByIdAndUpdate(ride.partner, { currentStatus: 'available' });
             await PartnerProfile.findOneAndUpdate(
                 { user: ride.partner },
@@ -125,7 +110,6 @@ export const cancelRide = asyncHandler(async (req, res) => {
             );
         }
 
-        // Global broadcast to remove from available rides
         io.emit("ride:cancelled", { 
             rideId: ride._id, 
             message: "Ride cancelled by passenger" 
@@ -135,9 +119,7 @@ export const cancelRide = asyncHandler(async (req, res) => {
     return res.status(200).json(new ApiResponse(200, {}, "Ride cancelled successfully."));
 });
 
-// ═══════════════════════════════════════════════════════════════
-// 4. CANCEL RIDE BY DRIVER (NEW - Rider can cancel!)
-// ═══════════════════════════════════════════════════════════════
+// 4. CANCEL RIDE BY DRIVER (NEW)
 export const cancelRideByDriver = asyncHandler(async (req, res) => {
     const { rideId } = req.params;
     const { reason } = req.body;
@@ -145,7 +127,6 @@ export const cancelRideByDriver = asyncHandler(async (req, res) => {
     const ride = await Ride.findById(rideId);
     if (!ride) throw new ApiError(404, "Ride not found.");
 
-    // Verify this driver owns the ride
     if (ride.partner?.toString() !== req.user._id.toString()) {
         throw new ApiError(403, "You can only cancel rides assigned to you.");
     }
@@ -162,7 +143,6 @@ export const cancelRideByDriver = asyncHandler(async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
-        // Notify passenger
         io.to(`user:${ride.passenger.toString()}`).emit("ride:cancelled_by_driver", {
             rideId: ride._id,
             message: "Driver has cancelled the ride",
@@ -170,7 +150,6 @@ export const cancelRideByDriver = asyncHandler(async (req, res) => {
             cancelledBy: "partner"
         });
 
-        // Free up driver
         await User.findByIdAndUpdate(req.user._id, { currentStatus: 'available' });
         await PartnerProfile.findOneAndUpdate(
             { user: req.user._id },
@@ -183,9 +162,7 @@ export const cancelRideByDriver = asyncHandler(async (req, res) => {
     );
 });
 
-// ═══════════════════════════════════════════════════════════════
-// 5. UPDATE RIDE STATUS (Partner Side) - Added ARRIVED support
-// ═══════════════════════════════════════════════════════════════
+// 5. UPDATE RIDE STATUS
 export const updateRideStatus = asyncHandler(async (req, res) => {
     const { rideId } = req.params;
     const { status } = req.body;
@@ -202,7 +179,6 @@ export const updateRideStatus = asyncHandler(async (req, res) => {
         throw new ApiError(403, "You can only update your assigned rides.");
     }
 
-    // Status flow validation
     const flow = {
         "ACCEPTED": ["ARRIVED"],
         "ARRIVED": ["ONGOING"],
@@ -215,7 +191,6 @@ export const updateRideStatus = asyncHandler(async (req, res) => {
 
     ride.status = status;
 
-    // Set timestamps
     if (status === "ARRIVED") ride.arrivedAt = new Date();
     if (status === "ONGOING") ride.startedAt = new Date();
     if (status === "COMPLETED") ride.completedAt = new Date();
@@ -237,7 +212,6 @@ export const updateRideStatus = asyncHandler(async (req, res) => {
             timestamp: new Date()
         });
 
-        // Also emit to ride room for chat/tracking page
         io.to(`ride_${ride._id}`).emit("ride:status_updated", {
             status,
             rideId: ride._id
@@ -249,13 +223,10 @@ export const updateRideStatus = asyncHandler(async (req, res) => {
     );
 });
 
-// ═══════════════════════════════════════════════════════════════
-// 6. GET MY ACTIVE RIDE (NEW - Fixes dashboard refresh issue!)
-// ═══════════════════════════════════════════════════════════════
+// 6. GET MY ACTIVE RIDE
 export const getMyActiveRide = asyncHandler(async (req, res) => {
     const userId = req.user._id;
 
-    // Find any ride where user is passenger OR partner AND status is active
     const activeRide = await Ride.findOne({
         $or: [
             { passenger: userId },
@@ -278,9 +249,7 @@ export const getMyActiveRide = asyncHandler(async (req, res) => {
     );
 });
 
-// ═══════════════════════════════════════════════════════════════
-// 7. GET RIDE BY ID (NEW - For recovery after refresh)
-// ═══════════════════════════════════════════════════════════════
+// 7. GET RIDE BY ID
 export const getRideById = asyncHandler(async (req, res) => {
     const { rideId } = req.params;
 
@@ -290,7 +259,6 @@ export const getRideById = asyncHandler(async (req, res) => {
 
     if (!ride) throw new ApiError(404, "Ride not found.");
 
-    // Security: Only passenger or partner can view
     const userId = req.user._id.toString();
     const isPassenger = ride.passenger?._id?.toString() === userId;
     const isPartner = ride.partner?._id?.toString() === userId;
@@ -304,9 +272,7 @@ export const getRideById = asyncHandler(async (req, res) => {
     );
 });
 
-// ═══════════════════════════════════════════════════════════════
 // 8. GET RIDE HISTORY / ANALYSIS
-// ═══════════════════════════════════════════════════════════════
 export const getUserRideAnalysis = asyncHandler(async (req, res) => {
     const { userId } = req.params;
 
@@ -342,23 +308,19 @@ export const getUserRideAnalysis = asyncHandler(async (req, res) => {
     );
 });
 
-// ═══════════════════════════════════════════════════════════════
-// 9. GET ALL RIDES (For admin/driver dashboard)
-// ═══════════════════════════════════════════════════════════════
+// 9. GET ALL RIDES
 export const getAllRides = asyncHandler(async (req, res) => {
     const { status, page = 1, limit = 10 } = req.query;
 
     const query = {};
     if (status) query.status = status;
 
-    // If partner, only show their rides or pending ones
     if (req.user.role === 'partner') {
         query.$or = [
             { status: "PENDING" },
             { partner: req.user._id }
         ];
     }
-    // If passenger, only show their rides
     else if (req.user.role === 'passenger') {
         query.passenger = req.user._id;
     }
