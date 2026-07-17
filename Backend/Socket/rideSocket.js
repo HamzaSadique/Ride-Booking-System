@@ -38,7 +38,7 @@ const resolveAndUpdateRide = async (rideId, updateData, options = {}) => {
 // MAIN SOCKET HANDLER
 // ═══════════════════════════════════════════════════════════════
 export const handleRideEvents = (io, socket) => {
-    console.log(`Socket active: ${socket.id} | User: ${socket.user?._id} | Role: ${socket.user?.role}`);
+    console.log(`🔌 Socket active: ${socket.id} | User: ${socket.user?._id} | Role: ${socket.user?.role}`);
 
     // Auto-join user's personal room on connection
     if (socket.user?._id) {
@@ -59,17 +59,17 @@ export const handleRideEvents = (io, socket) => {
     socket.on("partner:online", async (data) => {
         try {
             if (!data || !data.driverId) {
-                console.log("partner:online missing driverId");
+                console.log("❌ partner:online missing driverId");
                 return;
             }
 
             const lat = Number(data.latitude || data.lat);
             const lng = Number(data.longitude || data.lng);
 
-            console.log(`Partner ${data.driverId} ONLINE at ${lat}, ${lng}`);
+            console.log(`🟢 Partner ${data.driverId} ONLINE at ${lat}, ${lng}`);
 
             if (!lat || !lng || isNaN(lat) || isNaN(lng)) {
-                console.error(`Invalid coordinates`);
+                console.error(`❌ Invalid coordinates`);
                 socket.emit("ride:error", { message: "Invalid GPS location" });
                 return;
             }
@@ -101,19 +101,29 @@ export const handleRideEvents = (io, socket) => {
                 { returnDocument: 'after' }
             );
 
-            if (partnerProfile) {
+            // ✅ Send pending rides to driver (filtered by vehicleType)
+            if (partnerProfile && partnerProfile.vehicleType) {
+                console.log(`📋 Driver vehicle type: ${partnerProfile.vehicleType}`);
+                
                 const pendingRides = await Ride.find({
                     status: "PENDING",
-                    vehicleType: partnerProfile.vehicleType
-                }).sort({ createdAt: -1 }).limit(5);
+                    vehicleType: partnerProfile.vehicleType // Match driver's vehicle type
+                })
+                .populate("passenger", "name phone")
+                .sort({ createdAt: -1 })
+                .limit(10);
+
+                console.log(`📋 Found ${pendingRides.length} pending ${partnerProfile.vehicleType} rides`);
 
                 if (pendingRides.length > 0) {
-                    console.log(`Driver notified of ${pendingRides.length} pending rides`);
                     pendingRides.forEach(ride => {
+                        console.log(`  → Sending ride ${ride._id} to ${partnerProfile.vehicleType} driver`);
+                        
                         io.to(`driver:${data.driverId}`).emit("ride:new_request", {
                             rideId: ride._id,
                             frontendRideId: ride.rideId || ride._id,
-                            passengerId: ride.passenger,
+                            passengerId: ride.passenger?._id || ride.passenger,
+                            passengerName: ride.passenger?.name || "Passenger",
                             pickupLocation: {
                                 address: ride.pickupLocation.address,
                                 lat: ride.pickupLocation.coordinates[1],
@@ -131,19 +141,26 @@ export const handleRideEvents = (io, socket) => {
                             timestamp: new Date()
                         });
                     });
+                } else {
+                    console.log(`📋 No pending ${partnerProfile.vehicleType} rides available`);
                 }
+            } else {
+                console.log(`⚠️ Partner profile incomplete or vehicleType not set`);
             }
 
         } catch (error) {
-            console.error("partner:online error:", error.message);
+            console.error("❌ partner:online error:", error.message);
             socket.emit("ride:error", { message: error.message });
         }
     });
 
+    // ═══════════════════════════════════════════════════════════════
+    // PARTNER OFFLINE
+    // ═══════════════════════════════════════════════════════════════
     socket.on("partner:offline", async (data) => {
         try {
             if (!data || !data.driverId) return;
-            console.log(`Partner ${data.driverId} OFFLINE`);
+            console.log(`🔴 Partner ${data.driverId} OFFLINE`);
             socket.leave(`driver:${data.driverId}`);
             socket.leave("active_drivers");
 
@@ -159,10 +176,13 @@ export const handleRideEvents = (io, socket) => {
             );
 
         } catch (error) {
-            console.error("partner:offline error:", error.message);
+            console.error("❌ partner:offline error:", error.message);
         }
     });
 
+    // ═══════════════════════════════════════════════════════════════
+    // PARTNER LOCATION SYNC
+    // ═══════════════════════════════════════════════════════════════
     socket.on("partner:location_sync", async (data) => {
         try {
             if (!data || !data.driverId || !data.latitude || !data.longitude) return;
@@ -188,22 +208,32 @@ export const handleRideEvents = (io, socket) => {
                 }
             );
 
-            console.log(`Driver ${data.driverId} location synced: ${lat}, ${lng}`);
+            console.log(`📍 Driver ${data.driverId} location: ${lat.toFixed(4)}, ${lng.toFixed(4)}`);
         } catch (error) {
-            console.error("partner:location_sync error:", error.message);
+            console.error("❌ partner:location_sync error:", error.message);
         }
     });
 
     // ═══════════════════════════════════════════════════════════════
-    // RIDE REQUEST CREATE (Passenger books a ride) - OTP REMOVED
+    // RIDE REQUEST CREATE (Passenger books a ride)
     // ═══════════════════════════════════════════════════════════════
     socket.on("ride:request_create", async (data) => {
         try {
             const { rideId, fare, actualFare, distance, duration, vehicleType, passenger, pickupLocation, dropoffLocation } = data;
 
-            console.log("ride:request_create:", JSON.stringify({ rideId, vehicleType, passenger: passenger?.name }));
+            console.log("🚗 NEW RIDE REQUEST:", JSON.stringify({ 
+                rideId, 
+                vehicleType, 
+                passenger: passenger?.name 
+            }));
 
             if (!passenger?.id || !pickupLocation || !dropoffLocation || !vehicleType) {
+                console.error("❌ Missing required fields:", { 
+                    hasPassenger: !!passenger?.id, 
+                    hasPickup: !!pickupLocation, 
+                    hasDropoff: !!dropoffLocation, 
+                    hasVehicleType: !!vehicleType 
+                });
                 socket.emit("ride:error", { message: "Missing required fields" });
                 return;
             }
@@ -215,6 +245,7 @@ export const handleRideEvents = (io, socket) => {
                 return;
             }
 
+            // ✅ Create ride with vehicleType stored
             const ride = await Ride.create({
                 rideId: rideId || undefined,
                 passenger: passenger.id,
@@ -229,44 +260,51 @@ export const handleRideEvents = (io, socket) => {
                 fare: fare || actualFare,
                 distance,
                 duration,
-                vehicleType,
+                vehicleType: vehicleType, // ✅ Store vehicle type
                 status: "PENDING"
-                // NO OTP generated
             });
 
-            console.log(`Ride created: ${ride._id}`);
+            console.log(`✅ Ride created: ${ride._id} | Vehicle: ${vehicleType} | Fare: Rs.${fare || actualFare}`);
 
-            // Find nearby drivers
+            // ✅ Find drivers with MATCHING vehicle type within 5km
             let nearbyPartners = [];
             try {
                 nearbyPartners = await PartnerProfile.find({
                     isOnline: true,
                     isVerified: true,
-                    vehicleType: vehicleType,
+                    vehicleType: vehicleType, // ✅ Match vehicle type
                     currentLocation: {
                         $near: {
                             $geometry: {
                                 type: "Point",
                                 coordinates: [pickupLng, pickupLat]
                             },
-                            $maxDistance: 5000
+                            $maxDistance: 5000 // 5km
                         }
                     }
                 }).populate("user", "name phone rating");
+                
+                console.log(`📍 Geo query: Found ${nearbyPartners.length} ${vehicleType} drivers within 5km`);
             } catch (geoError) {
-                console.log(`Geo query failed, using fallback: ${geoError.message}`);
+                console.log(`⚠️ Geo query failed: ${geoError.message}`);
+                // Fallback: Find all online drivers with matching vehicle type
                 nearbyPartners = await PartnerProfile.find({
                     isOnline: true,
                     isVerified: true,
                     vehicleType: vehicleType
-                }).populate("user", "name phone rating").limit(10);
+                }).populate("user", "name phone rating").limit(20);
+                console.log(`📍 Fallback: Found ${nearbyPartners.length} ${vehicleType} drivers`);
             }
 
-            // Notify nearby drivers
+            // Notify matching drivers
             if (nearbyPartners.length > 0) {
-                nearbyPartners.forEach(partner => {
+                console.log(`📢 Broadcasting to ${nearbyPartners.length} ${vehicleType} drivers`);
+                
+                nearbyPartners.forEach((partner, index) => {
                     const driverId = partner.user?._id?.toString();
                     if (!driverId) return;
+
+                    console.log(`  ${index + 1}. → Driver: ${driverId} (${partner.user?.name})`);
 
                     io.to(`driver:${driverId}`).emit("ride:new_request", {
                         rideId: ride._id,
@@ -279,7 +317,7 @@ export const handleRideEvents = (io, socket) => {
                         actualFare,
                         distance,
                         duration,
-                        vehicleType,
+                        vehicleType: vehicleType,
                         timestamp: new Date()
                     });
                 });
@@ -288,55 +326,35 @@ export const handleRideEvents = (io, socket) => {
                     rideId: ride._id,
                     frontendRideId: ride.rideId,
                     driversNotified: nearbyPartners.length,
+                    vehicleType: vehicleType,
                     status: "PENDING"
                 });
             } else {
-                // Fallback: broadcast to all online drivers
-                const allOnlineDrivers = await PartnerProfile.find({
-                    isOnline: true
-                }).populate("user", "name phone rating").limit(20);
-
-                allOnlineDrivers.forEach(partner => {
-                    const driverId = partner.user?._id?.toString();
-                    if (!driverId) return;
-
-                    io.to(`driver:${driverId}`).emit("ride:new_request", {
-                        rideId: ride._id,
-                        frontendRideId: ride.rideId || ride._id,
-                        passengerId: passenger.id,
-                        passengerName: passenger.name,
-                        pickupLocation,
-                        dropoffLocation,
-                        fare: fare || actualFare,
-                        actualFare,
-                        distance,
-                        duration,
-                        vehicleType,
-                        timestamp: new Date()
-                    });
-                });
-
+                console.log(`⚠️ No online ${vehicleType} drivers found!`);
                 socket.emit("ride:searching", {
                     rideId: ride._id,
                     frontendRideId: ride.rideId,
-                    driversNotified: allOnlineDrivers.length,
+                    driversNotified: 0,
+                    vehicleType: vehicleType,
                     status: "PENDING",
-                    note: "Broadcast to all online drivers"
+                    note: `No ${vehicleType} drivers available. Try another vehicle type.`
                 });
             }
 
         } catch (error) {
-            console.error("ride:request_create error:", error.message);
+            console.error("❌ ride:request_create error:", error.message);
             socket.emit("ride:error", { message: error.message });
         }
     });
 
     // ═══════════════════════════════════════════════════════════════
-    // DRIVER ACCEPTS RIDE - OTP REMOVED
+    // DRIVER ACCEPTS RIDE
     // ═══════════════════════════════════════════════════════════════
     socket.on("ride:accept_intent", async (data) => {
         try {
             const { rideId, driverId } = data;
+            console.log(`✅ Driver ${driverId} accepting ride ${rideId}`);
+            
             const ride = await resolveRide(rideId);
             if (!ride || ride.status !== "PENDING") {
                 socket.emit("ride:error", { message: "Ride not available" });
@@ -357,17 +375,11 @@ export const handleRideEvents = (io, socket) => {
 
             const driver = await User.findById(driverId).select("name phone vehicle currentLocation rating");
 
-            // Join ride room for both chat and tracking
+            // Join ride room for tracking and chat
             socket.join(`ride_${ride._id}`);
 
-            // Also make passenger join the ride room
-            io.to(`user:${ride.passenger._id.toString()}`).emit("ride:join_room", {
-                rideId: ride._id,
-                room: `ride_${ride._id}`
-            });
-
-            // Notify passenger - NO OTP
-            io.to(`user:${ride.passenger._id.toString()}`).emit("ride:accepted_by_driver", {
+            // Prepare passenger notification data
+            const passengerData = {
                 rideId: updatedRide._id,
                 frontendRideId: updatedRide.rideId,
                 driverId,
@@ -378,7 +390,17 @@ export const handleRideEvents = (io, socket) => {
                 rating: driver.rating,
                 estimatedArrival: "5 mins",
                 fare: updatedRide.fare
-                // OTP REMOVED
+            };
+
+            // Notify passenger through multiple channels
+            io.to(`user:${ride.passenger._id.toString()}`).emit("ride:accepted_by_driver", passengerData);
+            io.to(ride.passenger._id.toString()).emit("ride:accepted_by_driver", passengerData);
+            io.to(`ride_${ride._id}`).emit("ride:accepted_by_driver", passengerData);
+
+            // Tell passenger to join ride room
+            io.to(`user:${ride.passenger._id.toString()}`).emit("ride:join_room", {
+                rideId: ride._id,
+                room: `ride_${ride._id}`
             });
 
             // Confirm to driver
@@ -392,10 +414,10 @@ export const handleRideEvents = (io, socket) => {
                 fare: updatedRide.fare
             });
 
-            console.log(`Ride ${rideId} accepted by driver: ${driverId}`);
+            console.log(`🎉 Ride ${rideId} accepted by driver ${driverId}`);
 
         } catch (error) {
-            console.error("ride:accept_intent error:", error.message);
+            console.error("❌ ride:accept_intent error:", error.message);
             socket.emit("ride:error", { message: error.message });
         }
     });
@@ -406,13 +428,17 @@ export const handleRideEvents = (io, socket) => {
     socket.on("ride:driver_counter_offer", async (data) => {
         try {
             const { rideId, driverId, offeredFare } = data;
+            console.log(`💰 Driver ${driverId} counter offer: Rs.${offeredFare} for ride ${rideId}`);
+            
             const ride = await resolveRide(rideId);
             if (!ride || ride.status !== "PENDING") {
                 socket.emit("ride:error", { message: "Ride not available" });
                 return;
             }
+            
             const driver = await User.findById(driverId).select("name vehicle rating");
-            io.to(`user:${ride.passenger}`).emit("ride:partner_counter_offer", {
+            
+            const counterData = {
                 rideId: ride._id,
                 frontendRideId: ride.rideId,
                 driverId,
@@ -421,10 +447,15 @@ export const handleRideEvents = (io, socket) => {
                 rating: driver?.rating,
                 offeredFare,
                 timestamp: new Date()
-            });
-            console.log(`Driver ${driverId} offered Rs.${offeredFare} for ride ${rideId}`);
+            };
+
+            // Send to passenger through multiple channels
+            io.to(`user:${ride.passenger}`).emit("ride:partner_counter_offer", counterData);
+            io.to(ride.passenger.toString()).emit("ride:partner_counter_offer", counterData);
+            
+            console.log(`📤 Counter offer sent to passenger`);
         } catch (error) {
-            console.error("ride:driver_counter_offer error:", error.message);
+            console.error("❌ ride:driver_counter_offer error:", error.message);
         }
     });
 
@@ -434,6 +465,7 @@ export const handleRideEvents = (io, socket) => {
     socket.on("ride:passenger_accept_counter", async (data) => {
         try {
             const { rideId, driverId, finalFare } = data;
+            console.log(`✅ Passenger accepted counter offer for ride ${rideId}. Fare: Rs.${finalFare}`);
 
             const ride = await resolveAndUpdateRide(
                 rideId,
@@ -456,12 +488,11 @@ export const handleRideEvents = (io, socket) => {
 
             const driver = await User.findById(driverId).select("name phone vehicle currentLocation rating");
 
-            // Join rooms
-            const driverSockets = await io.in(`driver:${driverId}`).fetchSockets();
-            driverSockets.forEach(s => s.join(`ride_${ride._id}`));
+            // Join ride room
+            socket.join(`ride_${ride._id}`);
 
             // Notify driver
-            io.to(`driver:${driverId}`).emit("ride:accept_confirmed", {
+            const driverConfirmData = {
                 rideId: ride._id,
                 frontendRideId: ride.rideId,
                 passengerId: populatedRide.passenger._id,
@@ -469,10 +500,14 @@ export const handleRideEvents = (io, socket) => {
                 pickup: ride.pickupLocation,
                 dropoff: ride.dropoffLocation,
                 fare: finalFare
-            });
+            };
 
-            // Notify passenger - NO OTP
-            io.to(`user:${populatedRide.passenger._id}`).emit("ride:accepted_by_driver", {
+            io.to(`driver:${driverId}`).emit("ride:accept_confirmed", driverConfirmData);
+            io.to(driverId.toString()).emit("ride:accept_confirmed", driverConfirmData);
+            io.to(`ride_${ride._id}`).emit("ride:accept_confirmed", driverConfirmData);
+
+            // Notify passenger
+            const passengerData = {
                 rideId: ride._id,
                 frontendRideId: ride.rideId,
                 driverId,
@@ -483,12 +518,14 @@ export const handleRideEvents = (io, socket) => {
                 rating: driver.rating,
                 estimatedArrival: "5 mins",
                 fare: finalFare
-            });
+            };
 
-            console.log(`Ride ${rideId} accepted. Driver: ${driverId}`);
+            socket.emit("ride:accepted_by_driver", passengerData);
+
+            console.log(`🎉 Counter offer accepted. Ride ${rideId} confirmed!`);
 
         } catch (error) {
-            console.error("ride:passenger_accept_counter error:", error.message);
+            console.error("❌ ride:passenger_accept_counter error:", error.message);
             socket.emit("ride:error", { message: error.message });
         }
     });
@@ -499,25 +536,34 @@ export const handleRideEvents = (io, socket) => {
     socket.on("ride:passenger_reject_counter", async (data) => {
         try {
             const { rideId, driverId } = data;
+            console.log(`❌ Passenger rejected counter offer for ride ${rideId}`);
+            
             const ride = await resolveRide(rideId);
             const resolvedRideId = ride ? ride._id : rideId;
 
-            io.to(`driver:${driverId}`).emit("ride:counter_rejected", {
+            const rejectionData = {
                 rideId: resolvedRideId,
                 frontendRideId: ride?.rideId,
                 message: "Passenger declined your offer"
-            });
+            };
+
+            io.to(`driver:${driverId}`).emit("ride:counter_rejected", rejectionData);
+            io.to(driverId.toString()).emit("ride:counter_rejected", rejectionData);
+            
+            console.log(`📤 Rejection sent to driver ${driverId}`);
         } catch (error) {
-            console.error("ride:passenger_reject_counter error:", error.message);
+            console.error("❌ ride:passenger_reject_counter error:", error.message);
         }
     });
 
     // ═══════════════════════════════════════════════════════════════
-    // DRIVER MARKS AS ARRIVED (NEW - replaces OTP verification)
+    // DRIVER MARKS AS ARRIVED
     // ═══════════════════════════════════════════════════════════════
     socket.on("driver:arrived", async (data) => {
         try {
             const { rideId } = data;
+            console.log(`🚗 Driver arrived for ride ${rideId}`);
+            
             const ride = await resolveRide(rideId);
 
             if (!ride || ride.status !== "ACCEPTED") {
@@ -530,21 +576,23 @@ export const handleRideEvents = (io, socket) => {
                 return;
             }
 
-            const updatedRide = await Ride.findByIdAndUpdate(
+            await Ride.findByIdAndUpdate(
                 ride._id,
                 { status: "ARRIVED", arrivedAt: new Date() },
                 { returnDocument: 'after' }
             );
 
-            // Notify passenger
-            io.to(`user:${ride.passenger.toString()}`).emit("ride:driver_arrived", {
+            const arrivalData = {
                 rideId: ride._id,
                 frontendRideId: ride.rideId,
                 message: "Driver has arrived at your pickup location!",
                 timestamp: new Date()
-            });
+            };
 
-            // Also notify ride room
+            // Notify passenger through multiple channels
+            io.to(`user:${ride.passenger.toString()}`).emit("ride:driver_arrived", arrivalData);
+            io.to(ride.passenger.toString()).emit("ride:driver_arrived", arrivalData);
+            io.to(`ride_${ride._id}`).emit("ride:driver_arrived", arrivalData);
             io.to(`ride_${ride._id}`).emit("ride:status_updated", {
                 status: "ARRIVED",
                 rideId: ride._id
@@ -555,16 +603,16 @@ export const handleRideEvents = (io, socket) => {
                 status: "ARRIVED"
             });
 
-            console.log(`Driver arrived at ride ${rideId}`);
+            console.log(`✅ Driver arrived at pickup for ride ${rideId}`);
 
         } catch (error) {
-            console.error("driver:arrived error:", error.message);
+            console.error("❌ driver:arrived error:", error.message);
             socket.emit("ride:error", { message: error.message });
         }
     });
 
     // ═══════════════════════════════════════════════════════════════
-    // START RIDE (Driver starts trip - replaces OTP verification)
+    // START RIDE (Driver starts trip)
     // ═══════════════════════════════════════════════════════════════
     socket.on("ride:start_trip", async (data) => {
         try {
@@ -586,16 +634,21 @@ export const handleRideEvents = (io, socket) => {
                 startedAt: new Date() 
             });
 
-            io.to(`ride_${ride._id}`).emit("ride:started", { 
+            const startData = { 
                 rideId: ride._id,
                 frontendRideId: ride.rideId,
                 startedAt: new Date() 
-            });
+            };
 
-            console.log(`Ride ${rideId} started`);
+            // Notify all channels
+            io.to(`ride_${ride._id}`).emit("ride:started", startData);
+            io.to(`user:${ride.passenger}`).emit("ride:started", startData);
+            io.to(ride.passenger.toString()).emit("ride:started", startData);
+
+            console.log(`🏁 Trip started for ride ${rideId}`);
 
         } catch (error) {
-            console.error("ride:start_trip error:", error.message);
+            console.error("❌ ride:start_trip error:", error.message);
             socket.emit("ride:error", { message: error.message });
         }
     });
@@ -624,14 +677,21 @@ export const handleRideEvents = (io, socket) => {
                 { isAvailable: true }
             );
 
-            io.to(`ride_${ride._id}`).emit("ride:finished", {
+            const finishData = {
                 rideId: ride._id,
                 frontendRideId: ride.rideId,
                 status: "COMPLETED",
                 fare: updatedRide.fare
-            });
+            };
+
+            io.to(`ride_${ride._id}`).emit("ride:finished", finishData);
+            io.to(`user:${ride.passenger}`).emit("ride:finished", finishData);
+            io.to(`driver:${ride.partner}`).emit("ride:finished", finishData);
+            
+            console.log(`✅ Ride ${rideId} completed successfully`);
+
         } catch (error) {
-            console.error("ride:complete error:", error.message);
+            console.error("❌ ride:complete error:", error.message);
         }
     });
 
@@ -641,7 +701,7 @@ export const handleRideEvents = (io, socket) => {
     socket.on("ride:cancel_by_passenger", async (data) => {
         try {
             const { rideId } = data;
-            console.log(`Cancelling ride: ${rideId}`);
+            console.log(`❌ Passenger cancelling ride: ${rideId}`);
 
             let ride;
             if (rideId && typeof rideId === 'string' && rideId.startsWith("ride_")) {
@@ -663,18 +723,23 @@ export const handleRideEvents = (io, socket) => {
                 return;
             }
 
+            const cancelData = {
+                rideId: ride._id,
+                frontendRideId: ride.rideId,
+                reason: "Passenger cancelled the ride",
+                cancelledBy: "user"
+            };
+
             if (ride.partner) {
                 await User.findByIdAndUpdate(ride.partner, { currentStatus: 'available' });
                 await PartnerProfile.findOneAndUpdate(
                     { user: ride.partner },
                     { isAvailable: true }
                 );
-                io.to(`driver:${ride.partner}`).emit("ride:cancelled_by_other_party", {
-                    rideId: ride._id,
-                    frontendRideId: ride.rideId,
-                    reason: "Passenger cancelled the ride",
-                    cancelledBy: "user"
-                });
+
+                io.to(`driver:${ride.partner}`).emit("ride:cancelled_by_other_party", cancelData);
+                io.to(ride.partner.toString()).emit("ride:cancelled_by_other_party", cancelData);
+                io.to(`ride_${ride._id}`).emit("ride:cancelled_by_other_party", cancelData);
             }
 
             socket.emit("ride:cancelled_confirmed", { 
@@ -682,19 +747,23 @@ export const handleRideEvents = (io, socket) => {
                 frontendRideId: ride.rideId 
             });
 
+            io.to(`ride_${ride._id}`).emit("ride:cancelled_by_other_party", cancelData);
+
+            console.log(`✅ Ride ${rideId} cancelled by passenger`);
+
         } catch (error) {
-            console.error("ride:cancel_by_passenger error:", error.message);
+            console.error("❌ ride:cancel_by_passenger error:", error.message);
             socket.emit("ride:error", { message: error.message });
         }
     });
 
     // ═══════════════════════════════════════════════════════════════
-    // CANCEL RIDE BY DRIVER (NEW - Rider can cancel!)
+    // CANCEL RIDE BY DRIVER
     // ═══════════════════════════════════════════════════════════════
     socket.on("ride:cancel_by_driver", async (data) => {
         try {
             const { rideId, reason } = data;
-            console.log(`Driver cancelling ride: ${rideId}`);
+            console.log(`❌ Driver cancelling ride: ${rideId}`);
 
             const ride = await resolveRide(rideId);
             if (!ride) {
@@ -702,7 +771,6 @@ export const handleRideEvents = (io, socket) => {
                 return;
             }
 
-            // Verify driver owns this ride
             if (ride.partner?.toString() !== socket.user?._id?.toString()) {
                 socket.emit("ride:error", { message: "You can only cancel your assigned rides" });
                 return;
@@ -713,7 +781,7 @@ export const handleRideEvents = (io, socket) => {
                 return;
             }
 
-            const updatedRide = await Ride.findByIdAndUpdate(
+            await Ride.findByIdAndUpdate(
                 ride._id,
                 { 
                     status: "CANCELLED", 
@@ -724,30 +792,32 @@ export const handleRideEvents = (io, socket) => {
                 { returnDocument: 'after' }
             );
 
-            // Free driver
             await User.findByIdAndUpdate(socket.user._id, { currentStatus: 'available' });
             await PartnerProfile.findOneAndUpdate(
                 { user: socket.user._id },
                 { isAvailable: true }
             );
 
-            // Notify passenger
-            io.to(`user:${ride.passenger.toString()}`).emit("ride:cancelled_by_driver", {
+            const cancelData = {
                 rideId: ride._id,
                 frontendRideId: ride.rideId,
                 reason: reason || "Driver cancelled",
                 cancelledBy: "partner"
-            });
+            };
+
+            io.to(`user:${ride.passenger.toString()}`).emit("ride:cancelled_by_driver", cancelData);
+            io.to(ride.passenger.toString()).emit("ride:cancelled_by_driver", cancelData);
+            io.to(`ride_${ride._id}`).emit("ride:cancelled_by_driver", cancelData);
 
             socket.emit("ride:cancel_confirmed", {
                 rideId: ride._id,
                 message: "Ride cancelled successfully"
             });
 
-            console.log(`Driver ${socket.user._id} cancelled ride ${rideId}`);
+            console.log(`✅ Ride ${rideId} cancelled by driver`);
 
         } catch (error) {
-            console.error("ride:cancel_by_driver error:", error.message);
+            console.error("❌ ride:cancel_by_driver error:", error.message);
             socket.emit("ride:error", { message: error.message });
         }
     });
@@ -755,21 +825,41 @@ export const handleRideEvents = (io, socket) => {
     // ═══════════════════════════════════════════════════════════════
     // JOIN RIDE ROOM (For chat and tracking)
     // ═══════════════════════════════════════════════════════════════
-    socket.on("ride:join_room", (rideId) => {
+    socket.on("ride:join_room", async (rideId) => {
         if (!rideId) return;
-        console.log(`Joined ride room: ride_${rideId}`);
+        
+        try {
+            const ride = await resolveRide(rideId);
+            if (!ride) {
+                socket.emit("ride:error", { message: "Ride not found" });
+                return;
+            }
+
+            const userId = socket.user?._id?.toString();
+            const isPassenger = ride.passenger?.toString() === userId;
+            const isPartner = ride.partner?.toString() === userId;
+
+            if (!isPassenger && !isPartner) {
+                socket.emit("ride:error", { message: "Not authorized for this ride" });
+                return;
+            }
+        } catch (err) {
+            socket.emit("ride:error", { message: "Error verifying ride access" });
+            return;
+        }
+
+        console.log(`🚪 User joined ride room: ride_${rideId}`);
         socket.join(`ride_${rideId}`);
 
-        // Confirm join
         socket.emit("ride:room_joined", {
             rideId,
             room: `ride_${rideId}`,
-            message: "You are now connected to ride updates and chat"
+            message: "Connected to ride updates and chat"
         });
     });
 
     // ═══════════════════════════════════════════════════════════════
-    // GET ACTIVE RIDE (Socket version - for instant recovery)
+    // GET ACTIVE RIDE (For page refresh recovery)
     // ═══════════════════════════════════════════════════════════════
     socket.on("ride:get_active", async () => {
         try {
@@ -790,27 +880,26 @@ export const handleRideEvents = (io, socket) => {
             .sort({ createdAt: -1 });
 
             if (activeRide) {
-                // Auto-join room
                 socket.join(`ride_${activeRide._id}`);
-
                 socket.emit("ride:active_found", {
                     ride: activeRide,
                     room: `ride_${activeRide._id}`
                 });
+                console.log(`📦 Active ride recovered: ${activeRide._id} (${activeRide.status})`);
             } else {
                 socket.emit("ride:no_active", { message: "No active ride" });
             }
         } catch (error) {
-            console.error("ride:get_active error:", error.message);
+            console.error("❌ ride:get_active error:", error.message);
             socket.emit("ride:error", { message: error.message });
         }
     });
 
     // ═══════════════════════════════════════════════════════════════
-    // DISCONNECT
+    // DISCONNECT CLEANUP
     // ═══════════════════════════════════════════════════════════════
     socket.on("disconnect", async () => {
-        console.log(`Disconnected: ${socket.id}`);
+        console.log(`🔌 Socket disconnected: ${socket.id}`);
         await User.findOneAndUpdate(
             { socketId: socket.id },
             { isOnline: false, currentStatus: 'offline', socketId: null }

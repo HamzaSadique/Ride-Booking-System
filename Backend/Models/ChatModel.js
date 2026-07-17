@@ -12,6 +12,11 @@ const chatSchema = new mongoose.Schema({
         ref: "User",
         required: true
     },
+    senderRole: {
+        type: String,
+        enum: ["passenger", "partner"],
+        required: true
+    },
     message: {
         type: String,
         required: true,

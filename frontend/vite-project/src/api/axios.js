@@ -1,20 +1,48 @@
 // src/api/axios.js
 import axios from 'axios';
-import { API_BASE_URL } from '../utils/constants'; // Tumhare banaye hue constants
 
 const API = axios.create({
-    baseURL: API_BASE_URL, // Yahan 'http://localhost:5000/api/v1' khud hi aa jayega
-    withCredentials: true, 
+    baseURL: 'http://localhost:8000/api/v1', // Make sure this matches your backend
+    withCredentials: true,
+    headers: {
+        'Content-Type': 'application/json'
+    }
 });
 
-// Interceptor: Har request ke sath token automatic chala jaye
-API.interceptors.request.use((config) => {
-    // Hum token direct storage se bhi utha sakte hain persistence ke liye
-    const token = localStorage.getItem('token'); 
-    if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
+// Interceptor: Add token to every request
+API.interceptors.request.use(
+    (config) => {
+        // Try multiple sources for the token
+        const token = localStorage.getItem('token') || 
+                     localStorage.getItem('authToken') ||
+                     sessionStorage.getItem('token');
+        
+        if (token) {
+            config.headers.Authorization = `Bearer ${token}`;
+            console.log('📤 Request with token to:', config.url);
+        } else {
+            console.warn('⚠️ No token found for request to:', config.url);
+        }
+        
+        return config;
+    },
+    (error) => {
+        return Promise.reject(error);
     }
-    return config;
-});
+);
+
+// Interceptor: Handle response errors
+API.interceptors.response.use(
+    (response) => {
+        return response;
+    },
+    (error) => {
+        if (error.response?.status === 401) {
+            console.warn('🔒 401 Unauthorized for:', error.config?.url);
+            // Don't redirect here, let the component handle it
+        }
+        return Promise.reject(error);
+    }
+);
 
 export default API;

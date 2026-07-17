@@ -1,126 +1,180 @@
 import { Chat } from "../Models/ChatModel.js";
+import Ride from "../Models/ModelRide.js";
 
 export const handleChatEvents = (io, socket) => {
 
-    // ═══════════════════════════════════════════════════════════════
-    // JOIN CHAT ROOM (Auto-loads history)
-    // ═══════════════════════════════════════════════════════════════
+    // Join chat room for a ride
     socket.on("chat:join_room", async (rideId) => {
+        if (!rideId) return;
+
+        // Validate rideId format
+        if (!rideId.match(/^[0-9a-fA-F]{24}$/)) {
+            console.log("Invalid rideId for chat room:", rideId);
+            socket.emit("chat:error", { message: "Invalid ride ID format" });
+            return;
+        }
+
         try {
-            if (!rideId) return;
+            // VERIFY user is part of this ride
+            const ride = await Ride.findById(rideId);
+            if (!ride) {
+                socket.emit("chat:error", { message: "Ride not found" });
+                return;
+            }
 
-            socket.join(`ride_${rideId}`);
-            console.log(`User joined chat room: ride_${rideId}`);
+            const userId = socket.user?._id?.toString();
+            const isPassenger = ride.passenger?.toString() === userId;
+            const isPartner = ride.partner?.toString() === userId;
 
-            // AUTO-LOAD CHAT HISTORY when joining
-            const history = await Chat.find({ rideId })
-                .populate("senderId", "name role avatar")
+            if (!isPassenger && !isPartner) {
+                console.log(`🚫 Unauthorized chat access: User ${userId} tried to join ride ${rideId}`);
+                socket.emit("chat:error", { message: "You are not part of this ride" });
+                return;
+            }
+
+            const roomName = `ride_chat_${rideId}`;
+            socket.join(roomName);
+            console.log(`💬 Authorized user ${userId} joined chat room: ${roomName}`);
+
+            // Load and send chat history
+            const messages = await Chat.find({ rideId: rideId })
+                .populate("senderId", "name avatar")
                 .sort({ createdAt: 1 })
                 .limit(100);
 
-            // Send history only to the user who joined
             socket.emit("chat:history_loaded", {
-                rideId,
-                messages: history,
-                count: history.length
+                rideId: rideId,
+                messages: messages.map(m => ({
+                    _id: m._id,
+                    senderId: m.senderId,
+                    senderRole: m.senderRole,
+                    message: m.message,
+                    createdAt: m.createdAt,
+                    timestamp: m.createdAt
+                }))
             });
-
-            // Notify room that user joined
-            socket.to(`ride_${rideId}`).emit("chat:user_joined", {
-                userId: socket.user?._id,
-                userName: socket.user?.name,
-                timestamp: new Date()
-            });
-
-        } catch (error) {
-            console.error("chat:join_room error:", error.message);
+        } catch (err) {
+            console.error("Chat history error:", err.message);
             socket.emit("chat:error", { message: "Failed to load chat history" });
         }
     });
 
-    // ═══════════════════════════════════════════════════════════════
-    // SEND MESSAGE
-    // ═══════════════════════════════════════════════════════════════
+    // Send message
     socket.on("chat:send_message", async (data) => {
+        const { rideId, message } = data;
+
+        if (!rideId || !message || !message.trim()) {
+            console.log("Invalid chat data:", data);
+            return;
+        }
+
+        // Validate rideId
+        if (!rideId.match(/^[0-9a-fA-F]{24}$/)) {
+            console.error("Invalid rideId format:", rideId);
+            socket.emit("chat:error", { message: "Invalid ride ID" });
+            return;
+        }
+
         try {
-            const { rideId, message, messageType = "text" } = data;
-
-            if (!rideId || !message || !message.trim()) {
-                socket.emit("chat:error", { message: "Ride ID and message are required" });
+            // Verify user is part of this ride
+            const ride = await Ride.findById(rideId);
+            if (!ride) {
+                socket.emit("chat:error", { message: "Ride not found" });
                 return;
             }
 
-            if (!socket.user?._id) {
-                socket.emit("chat:error", { message: "Authentication required" });
+            const userId = socket.user?._id?.toString();
+            const isPassenger = ride.passenger?.toString() === userId;
+            const isPartner = ride.partner?.toString() === userId;
+
+            if (!isPassenger && !isPartner) {
+                socket.emit("chat:error", { message: "Not authorized for this ride" });
                 return;
             }
 
-            // Sanitize message (basic XSS prevention)
-            const sanitizedMessage = message.trim()
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;");
+            const role = isPassenger ? "passenger" : "partner";
 
-            const savedChat = await Chat.create({
-                rideId,
+            // Save message to database
+            const chatMessage = await Chat.create({
+                rideId: rideId,
                 senderId: socket.user._id,
-                message: sanitizedMessage,
-                messageType
+                senderRole: role,
+                message: message.trim(),
+                messageType: "text"
             });
 
-            // Populate sender info before broadcasting
-            const populatedChat = await Chat.findById(savedChat._id)
-                .populate("senderId", "name role avatar")
-                .lean();
+            // Populate sender info
+            await chatMessage.populate("senderId", "name avatar");
 
-            // Broadcast to ride room (both passenger and driver)
-            io.to(`ride_${rideId}`).emit("chat:receive_message", {
-                _id: populatedChat._id,
-                rideId: populatedChat.rideId,
-                senderId: populatedChat.senderId,
-                message: populatedChat.message,
-                messageType: populatedChat.messageType,
-                createdAt: populatedChat.createdAt
-            });
+            const broadcastMessage = {
+                _id: chatMessage._id,
+                senderId: {
+                    _id: chatMessage.senderId._id,
+                    name: chatMessage.senderId.name,
+                    avatar: chatMessage.senderId.avatar
+                },
+                senderRole: chatMessage.senderRole,
+                message: chatMessage.message,
+                createdAt: chatMessage.createdAt,
+                timestamp: chatMessage.createdAt
+            };
 
-            // Confirm to sender
-            socket.emit("chat:message_sent", {
-                messageId: savedChat._id,
-                status: "delivered"
-            });
+            // Broadcast to ride chat room
+            const roomName = `ride_chat_${rideId}`;
+            io.to(roomName).emit("chat:receive_message", broadcastMessage);
 
-        } catch (error) {
-            console.error("Chat Error:", error.message);
+            // Also emit to individual user rooms for reliability
+            const otherPartyId = isPassenger ? ride.partner?.toString() : ride.passenger?.toString();
+            if (otherPartyId) {
+                // Send to both personal room and user-specific room
+                io.to(otherPartyId).emit("chat:new_notification", {
+                    rideId: rideId,
+                    message: `New message from ${role}`,
+                    senderName: socket.user.name
+                });
+                
+                // Also send to user-prefixed room as fallback
+                const otherPartyRoom = isPassenger ? `driver:${otherPartyId}` : `user:${otherPartyId}`;
+                io.to(otherPartyRoom).emit("chat:receive_message", broadcastMessage);
+            }
+
+            console.log(`💬 Message sent in ${roomName} by ${role}: ${message}`);
+
+        } catch (err) {
+            console.error("Chat send error:", err.message);
             socket.emit("chat:error", { message: "Failed to send message" });
         }
     });
 
-    // ═══════════════════════════════════════════════════════════════
-    // TYPING INDICATOR
-    // ═══════════════════════════════════════════════════════════════
+    // Typing indicator
     socket.on("chat:typing", (data) => {
         const { rideId, isTyping } = data;
         if (!rideId) return;
 
-        socket.to(`ride_${rideId}`).emit("chat:typing", {
-            userId: socket.user?._id,
+        const roomName = `ride_chat_${rideId}`;
+        socket.to(roomName).emit("chat:typing", {
+            userId: socket.user?._id?.toString(),
             userName: socket.user?.name,
-            isTyping,
-            timestamp: new Date()
+            isTyping: isTyping
         });
     });
 
-    // ═══════════════════════════════════════════════════════════════
-    // LEAVE CHAT ROOM
-    // ═══════════════════════════════════════════════════════════════
-    socket.on("chat:leave_room", (rideId) => {
-        socket.leave(`ride_${rideId}`);
-        console.log(`User left chat room: ride_${rideId}`);
+    // Mark messages as read
+    socket.on("chat:mark_read", async (data) => {
+        const { rideId } = data;
+        if (!rideId) return;
 
-        socket.to(`ride_${rideId}`).emit("chat:user_left", {
-            userId: socket.user?._id,
-            userName: socket.user?.name,
-            timestamp: new Date()
-        });
+        try {
+            await Chat.updateMany(
+                { 
+                    rideId: rideId, 
+                    senderId: { $ne: socket.user?._id },
+                    isRead: false 
+                },
+                { isRead: true }
+            );
+        } catch (err) {
+            console.error("Mark read error:", err.message);
+        }
     });
 };

@@ -27,6 +27,14 @@ const rideSchema = new mongoose.Schema({
     distance: { type: String }, 
     duration: { type: String }, 
     
+    // ✅ ADD THIS FIELD
+     // ✅ FIXED: Allow null and not required
+    vehicleType: { 
+        type: String, 
+        enum: ['bike', 'car', 'rickshaw', 'auto', 'van', null],
+        default: null
+    },
+    
     status: {
         type: String,
         enum: ["PENDING", "ACCEPTED", "ARRIVED", "ONGOING", "COMPLETED", "CANCELLED"],
@@ -64,12 +72,12 @@ const rideSchema = new mongoose.Schema({
 // CRITICAL: For 5km radius query
 rideSchema.index({ "pickupLocation.coordinates": "2dsphere" });
 
-// REMOVED: rideSchema.index({ rideId: 1 });  ← was duplicate, unique: true already handles it
-
 // Additional indexes for performance
 rideSchema.index({ status: 1, createdAt: -1 });
 rideSchema.index({ passenger: 1, status: 1 });
 rideSchema.index({ partner: 1, status: 1 });
+// ✅ ADD THIS INDEX for filtering rides by vehicle type
+rideSchema.index({ vehicleType: 1, status: 1 });
 
 const Ride = mongoose.model("Ride", rideSchema);
 export default Ride;
