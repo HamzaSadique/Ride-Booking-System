@@ -6,7 +6,7 @@ import { ApiError } from "../Utils/ApiError.js";
 import { ApiResponse } from "../Utils/ApiResponse.js";
 import mongoose from "mongoose";
 
-// 1. REQUEST A RIDE (Passenger Side) - OTP REMOVED
+// 1. REQUEST A RIDE (Passenger Side)
 export const requestRide = asyncHandler(async (req, res) => {
     const { pickup, dropoff, fare, distance, duration, vehicleType } = req.body;
 
@@ -44,7 +44,7 @@ export const requestRide = asyncHandler(async (req, res) => {
     );
 });
 
-// 2. ACCEPT RIDE (Partner Side) - OTP REMOVED
+// 2. ACCEPT RIDE (Partner Side) - FIXED
 export const acceptRide = asyncHandler(async (req, res) => {
     const { rideId } = req.params;
 
@@ -62,6 +62,7 @@ export const acceptRide = asyncHandler(async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
+        // ✅ 1. Passenger ko notify karo (uska personal room)
         io.to(ride.passenger.toString()).emit("ride:accepted", {
             message: "A driver has accepted your ride!",
             rideId: ride._id,
@@ -70,6 +71,25 @@ export const acceptRide = asyncHandler(async (req, res) => {
             driverPhone: req.user.phone,
             driverLocation: req.user.currentLocation,
             estimatedArrival: "5 mins"
+        });
+
+        // ✅ 2. Driver ko bolo ride room join karne ke liye
+        io.to(`driver:${req.user._id.toString()}`).emit("ride:force_join", {
+            rideId: ride._id,
+            room: `ride_${ride._id}`,
+            message: "Join this ride room for live tracking"
+        });
+
+        // ✅ 3. Ride room mein bhi emit karo (taaki future mein kaam aaye)
+        io.to(`ride_${ride._id}`).emit("ride:status_updated", {
+            status: "ACCEPTED",
+            rideId: ride._id,
+            driver: {
+                _id: req.user._id,
+                name: req.user.name,
+                phone: req.user.phone,
+                currentLocation: req.user.currentLocation
+            }
         });
     }
 
@@ -110,7 +130,7 @@ export const cancelRide = asyncHandler(async (req, res) => {
             );
         }
 
-        io.emit("ride:cancelled", { 
+        io.to(`ride_${ride._id}`).emit("ride:cancelled", { 
             rideId: ride._id, 
             message: "Ride cancelled by passenger" 
         });
@@ -119,7 +139,7 @@ export const cancelRide = asyncHandler(async (req, res) => {
     return res.status(200).json(new ApiResponse(200, {}, "Ride cancelled successfully."));
 });
 
-// 4. CANCEL RIDE BY DRIVER (NEW)
+// 4. CANCEL RIDE BY DRIVER
 export const cancelRideByDriver = asyncHandler(async (req, res) => {
     const { rideId } = req.params;
     const { reason } = req.body;

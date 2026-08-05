@@ -228,7 +228,8 @@ export const handleRideEvents = (io, socket) => {
             }));
 
             if (!passenger?.id || !pickupLocation || !dropoffLocation || !vehicleType) {
-                console.error("❌ Missing required fields:", { 
+                console.error("❌ Missing required fields:",
+                     { 
                     hasPassenger: !!passenger?.id, 
                     hasPickup: !!pickupLocation, 
                     hasDropoff: !!dropoffLocation, 
@@ -909,4 +910,8 @@ export const handleRideEvents = (io, socket) => {
             { isOnline: false, isAvailable: false }
         );
     });
-};
+};  
+// DEBUG: Catch unhandled errors in this file
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});

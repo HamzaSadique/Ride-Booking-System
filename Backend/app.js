@@ -60,14 +60,15 @@ app.use("/api/v1/admin", adminRoutes);
 app.use("/api/v1/chat", chatRoutes);
 app.use("/api/v1/debug", debugRoutes); 
 
-// --- 4. Error Handling (SAB SE NEECHE) ---
-app.use(errorHandler); // 👈 Ye 404 handler se bhi neeche hona chahiye
-app.use(errorMiddleware); // Global error handler
-
-// 404 Handler (Agar koi route na mile)
+-
+// --- 4. 404 Handler 
 app.use((req, res) => {
     res.status(404).json({ success: false, message: "Route not found" });
 });
+
+// --- 5. Error Handling
+app.use(errorHandler); 
+app.use(errorMiddleware); 
 
 
 export default app;

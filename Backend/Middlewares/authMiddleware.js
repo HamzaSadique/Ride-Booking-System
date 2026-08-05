@@ -3,6 +3,19 @@ import User from "../Models/ModelUser.js"; // Make sure this path is correct!
 import { asyncHandler } from "../Utils/asyncHandler.js";
 import { ApiError } from "../Utils/ApiError.js";
 
+const ROLES = {
+    PARTNER: 'partner',
+    USER: 'user',
+    ADMIN: 'admin'
+};
+
+const STATUS = {
+    ACTIVE: 'active',
+    BLOCKED: 'blocked',
+    PENDING: 'pending',
+    REJECTED: 'rejected'
+};
+
 // --- 1. IsAuthenticated (for Express HTTP routes) ---
 export const isAuthenticated = asyncHandler(async (req, res, next) => {
     // Token nikaalna (Cookie ya Header se)
@@ -45,7 +58,9 @@ export const authorizeRoles = (...roles) => {
 };
 
 // --- 3. isVerifiedPartner ---
+
 export const isVerifiedPartner = asyncHandler(async (req, res, next) => {
+    
     if (req.user.role !== ROLES.PARTNER) {
         throw new ApiError(403, "Only partners can access this.");
     }
@@ -59,21 +74,16 @@ export const isVerifiedPartner = asyncHandler(async (req, res, next) => {
     next();
 });
 
-// --- 4. verifySocketToken (for Socket.IO) - FIXED! ---
-export const verifySocketToken = async (token) => {
+  export const verifySocketToken = async (token) => {
     try {
-        // 1. Verify token
-        const secret = process.env.JWT_SECRET; // .env wala naam yahan likhein
+        const secret = process.env.JWT_SECRET;
         const decoded = jwt.verify(token, secret);
         
-        // 2. Find user by email (Kyunki payload mein email hai)
-        const user = await User.findOne({ email: decoded.email }).select("-password");
+        // ✅ SAHI: _id se dhoondo (aapke isAuthenticated mein bhi yahi hai)
+        const user = await User.findById(decoded._id || decoded.id).select("-password");
         
-        if (!user) {
-            throw new Error("User not found in DB");
-        }
-        
-        return user; // Ye socket.user ban jayega
+        if (!user) throw new Error("User not found in DB");
+        return user;
     } catch (error) {
         throw new Error("Auth Failed: " + error.message);
     }
